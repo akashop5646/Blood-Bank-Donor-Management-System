@@ -5,24 +5,61 @@ require_once 'config.php';
 
 $errors = [];
 $success_message = '';
+$step = 1; // Start at step 1 (verification)
+$email_verified = ''; // Store the email after verification
 
-// --- LOGIC TO HANDLE FORGOT PASSWORD FORM SUBMISSION ---
+// --- LOGIC TO HANDLE VERIFICATION (STEP 1) ---
+if (isset($_POST['verify_identity'])) {
+    $email = mysqli_real_escape_string($conn, $_POST['email']);
+    $phone_number = mysqli_real_escape_string($conn, $_POST['phone_number']);
+    $date_of_birth = mysqli_real_escape_string($conn, $_POST['date_of_birth']);
+
+    if (empty($email) || empty($phone_number) || empty($date_of_birth)) {
+        $errors[] = "All verification fields are required.";
+    } else {
+        // Check if a donor exists with these exact details
+        $stmt = $conn->prepare("SELECT id FROM donors WHERE email = ? AND phone_number = ? AND date_of_birth = ?");
+        $stmt->bind_param("sss", $email, $phone_number, $date_of_birth);
+        $stmt->execute();
+        $result = $stmt->get_result();
+
+        if ($result->num_rows === 1) {
+            // Identity verified! Move to step 2
+            $step = 2;
+            $email_verified = $email; // Store the email to use in the next step
+        } else {
+            $errors[] = "The information provided does not match any account.";
+        }
+        $stmt->close();
+    }
+}
+
+// --- LOGIC TO HANDLE PASSWORD RESET (STEP 2) ---
 if (isset($_POST['reset_password'])) {
     $email = mysqli_real_escape_string($conn, $_POST['email']);
+    $new_password = $_POST['new_password'];
+    $confirm_new_password = $_POST['confirm_new_password'];
+    $step = 2; // Keep them on step 2 if there's an error
+    $email_verified = $email; // Keep the email field populated
 
-    // Basic validation
-    if (empty($email)) {
-        $errors[] = "Email address is required.";
-    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        $errors[] = "Invalid email format.";
+    if (empty($new_password) || empty($confirm_new_password)) {
+        $errors[] = "Please enter and confirm your new password.";
+    } elseif ($new_password !== $confirm_new_password) {
+        $errors[] = "The new passwords do not match.";
     } else {
-        // For security reasons, we don't reveal if the email was found or not.
-        // We just show a generic success message.
-        // In a real-world application, this is where you would generate a unique token,
-        // save it to the database with an expiry date, and email a reset link to the user.
+        // Validation passed, update the password
+        $hashed_new_password = password_hash($new_password, PASSWORD_DEFAULT);
         
-        // For this project, we will just display the success message.
-        $success_message = "If an account with that email exists, a password reset link has been sent.";
+        $stmt = $conn->prepare("UPDATE donors SET password = ? WHERE email = ?");
+        $stmt->bind_param("ss", $hashed_new_password, $email);
+        
+        if ($stmt->execute()) {
+            $success_message = "Password has been reset successfully. You can now log in.";
+            $step = 3; // Move to a final success step
+        } else {
+            $errors[] = "Failed to update password. Please try again.";
+        }
+        $stmt->close();
     }
 }
 ?>
@@ -37,7 +74,8 @@ if (isset($_POST['reset_password'])) {
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
     
-    <script src="https://kit.fontawesome.com/a076d05399.js" crossorigin="anonymous"></script>
+    <!-- Using Font Awesome 6 for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" xintegrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
 
     <style>
         /* General Styling & Variables from index.php */
@@ -57,7 +95,6 @@ if (isset($_POST['reset_password'])) {
             font-family: var(--font-family);
             line-height: 1.6;
             color: var(--dark-color);
-            /* Thematic background consistent with profile.php */
             background-image: linear-gradient(rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.95)), url('https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?ixlib=rb-4.0.3&ixid=MnwxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8&auto=format&fit=crop&w=1170&q=80');
             background-size: cover;
             background-position: center;
@@ -115,6 +152,7 @@ if (isset($_POST['reset_password'])) {
             font-family: inherit;
         }
         .form-group input:focus { outline: none; border-color: var(--primary-color); }
+        .form-group input[disabled] { background-color: #e9ecef; }
         
         /* Message Styles */
         .message { padding: 1rem; margin-bottom: 1rem; border-radius: var(--border-radius); text-align: left; }
@@ -147,31 +185,70 @@ if (isset($_POST['reset_password'])) {
 
     <main class="form-wrapper">
         <div class="form-container">
-            <h2>Forgot Your Password?</h2>
-            <p>No problem. Enter your email address below and we will send you a link to reset it.</p>
 
             <?php if (!empty($errors)): ?>
                 <div class="message error"><?php foreach ($errors as $error) echo "<p>$error</p>"; ?></div>
             <?php endif; ?>
+            
             <?php if (!empty($success_message)): ?>
+                <!-- Step 3: Success Message -->
                 <div class="message success"><p><?php echo $success_message; ?></p></div>
+                <h2>Password Reset!</h2>
+                <a href="index.php" class="btn btn-primary" style="width: 100%;">Click to Login</a>
+            
+            <?php elseif ($step === 2): ?>
+                <!-- Step 2: Set New Password -->
+                <h2>Set New Password</h2>
+                <p>Hello! Please enter your new password below.</p>
+                
+                <form action="forgot_password.php" method="post">
+                    <!-- We hide the email in the form so it can be passed to the next step -->
+                    <input type="hidden" name="email" value="<?php echo htmlspecialchars($email_verified); ?>">
+                    
+                    <div class="form-group">
+                        <label for="email_display">Email</label>
+                        <input type="email" id="email_display" value="<?php echo htmlspecialchars($email_verified); ?>" disabled>
+                    </div>
+                    <div class="form-group">
+                        <label for="new_password">New Password</label>
+                        <input type="password" name="new_password" id="new_password" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="confirm_new_password">Confirm New Password</label>
+                        <input type="password" name="confirm_new_password" id="confirm_new_password" required>
+                    </div>
+                    <button type="submit" name="reset_password" class="btn btn-primary" style="width: 100%;">Reset Password</button>
+                </form>
+
+            <?php else: ?>
+                <!-- Step 1: Verify Identity -->
+                <h2>Forgot Your Password?</h2>
+                <p>Please verify your identity by providing the details associated with your account.</p>
+
+                <form action="forgot_password.php" method="post">
+                    <div class="form-group">
+                        <label for="email">Email Address</label>
+                        <input type="email" name="email" id="email" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="phone_number">Phone Number</label>
+                        <input type="tel" name="phone_number" id="phone_number" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="date_of_birth">Date of Birth</label>
+                        <input type="date" name="date_of_birth" id="date_of_birth" required>
+                    </div>
+                    <button type="submit" name="verify_identity" class="btn btn-primary" style="width: 100%;">Verify Identity</button>
+                </form>
+                <a href="index.php" class="back-link">Remember your password? Login</a>
             <?php endif; ?>
 
-            <form action="forgot_password.php" method="post">
-                <div class="form-group">
-                    <label for="email">Email Address</label>
-                    <input type="email" name="email" id="email" required>
-                </div>
-                <button type="submit" name="reset_password" class="btn btn-primary" style="width: 100%;">Send Reset Link</button>
-            </form>
-
-            <a href="index.php" class="back-link">Remember your password? Login</a>
         </div>
     </main>
 
     <footer class="footer">
         <div class="container">
-            <p>&copy; 2025 BloodLink Directory. All Rights Reserved.</p>
+            <p>&copy; <?php echo date("Y"); ?> BloodLink Directory. All Rights Reserved.</p>
         </div>
     </footer>
 
