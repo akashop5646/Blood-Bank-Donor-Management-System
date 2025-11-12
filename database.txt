@@ -1,0 +1,80 @@
+-- Create the database if it doesn't already exist
+-- The database name is `blood`
+CREATE DATABASE IF NOT EXISTS `blood` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+
+-- Select the database to use for the following commands
+USE `blood`;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `admins`
+-- Stores login credentials and details for website administrators.
+--
+CREATE TABLE `admins` (
+  `id` INT(11) NOT NULL AUTO_INCREMENT,
+  `username` VARCHAR(100) NOT NULL,
+  `password` VARCHAR(255) NOT NULL COMMENT 'Store hashed passwords!',
+  `full_name` VARCHAR(150) DEFAULT NULL,
+  `email` VARCHAR(100) NULL,
+  `phone_number` VARCHAR(20) NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `username` (`username`),
+  UNIQUE KEY `email` (`email`)
+) ENGINE=InnoDB;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `donors`
+-- Stores all information for registered donors, including their login details and availability.
+--
+CREATE TABLE `donors` (
+  `id` INT(11) NOT NULL AUTO_INCREMENT,
+  `full_name` VARCHAR(150) NOT NULL,
+  `email` VARCHAR(100) NOT NULL COMMENT 'Used for login',
+  `date_of_birth` DATE NULL DEFAULT NULL,
+  `password` VARCHAR(255) NOT NULL COMMENT 'Store hashed passwords!',
+  `phone_number` VARCHAR(20) NOT NULL,
+  `blood_group` ENUM('A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-') NOT NULL,
+  `address` VARCHAR(255) DEFAULT NULL COMMENT 'City or general area',
+  `status` ENUM('active', 'inactive') NOT NULL DEFAULT 'active' COMMENT 'Donor can set their availability',
+  `registered_date` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `email` (`email`)
+) ENGINE=InnoDB;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `donor_requests`
+-- Logs every contact request made from a user to a specific donor.
+--
+CREATE TABLE `donor_requests` (
+  `id` INT(11) NOT NULL AUTO_INCREMENT,
+  `donor_id` INT(11) NOT NULL COMMENT 'Links to the donors table',
+  `requester_name` VARCHAR(150) NOT NULL,
+  `requester_contact` VARCHAR(100) NOT NULL,
+  `message` TEXT DEFAULT NULL,
+  `request_date` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `status` ENUM('Pending','Accepted','Denied','Expired') NOT NULL DEFAULT 'Pending',
+  `expiry_date` DATE NULL DEFAULT NULL COMMENT 'Date when an accepted request expires',
+  PRIMARY KEY (`id`),
+  KEY `donor_id` (`donor_id`),
+  CONSTRAINT `requests_to_donors_fk` FOREIGN KEY (`donor_id`) REFERENCES `donors` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `contact_queries`
+-- Stores messages submitted through the "Contact Us" form on the main page.
+--
+CREATE TABLE `contact_queries` (
+  `id` INT(11) NOT NULL AUTO_INCREMENT,
+  `name` VARCHAR(100) NOT NULL,
+  `email` VARCHAR(100) NOT NULL,
+  `message` TEXT NOT NULL,
+  `submission_date` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB;
