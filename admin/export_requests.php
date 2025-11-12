@@ -7,6 +7,67 @@ if (!isset($_SESSION['admin_loggedin'])) {
     die("Access Denied: You are not authorized to view this page.");
 }
 
+// --- BUILD DYNAMIC SQL QUERY BASED ON FILTERS ---
+$sql = "
+    SELECT dr.id, dr.requester_name, dr.requester_contact, d.full_name as donor_name, 
+           dr.message, dr.status, dr.request_date, dr.expiry_date 
+    FROM donor_requests dr
+    JOIN donors d ON dr.donor_id = d.id
+";
+
+$where_clauses = [];
+$params = [];
+$types = '';
+
+// Get filter values from GET request
+$search = $_GET['search'] ?? '';
+$status_filter = $_GET['status'] ?? '';
+$date_start = $_GET['date_start'] ?? '';
+$date_end = $_GET['date_end'] ?? '';
+
+// 1. Search Filter
+if (!empty($search)) {
+    $search_term = '%' . $search . '%';
+    $where_clauses[] = "(dr.requester_name LIKE ? OR d.full_name LIKE ?)";
+    $params[] = $search_term;
+    $params[] = $search_term;
+    $types .= 'ss';
+}
+
+// 2. Status Filter
+if (!empty($status_filter)) {
+    if ($status_filter == 'Expired') {
+        $where_clauses[] = "(dr.status = 'Accepted' AND dr.expiry_date IS NOT NULL AND dr.expiry_date < CURDATE())";
+    } else if ($status_filter == 'Accepted') {
+        $where_clauses[] = "(dr.status = 'Accepted' AND (dr.expiry_date IS NULL OR dr.expiry_date >= CURDATE()))";
+    } else {
+        $where_clauses[] = "dr.status = ?";
+        $params[] = $status_filter;
+        $types .= 's';
+    }
+}
+
+// 3. Date Range Filter
+if (!empty($date_start)) {
+    $where_clauses[] = "dr.request_date >= ?";
+    $params[] = $date_start;
+    $types .= 's';
+}
+if (!empty($date_end)) {
+    $where_clauses[] = "dr.request_date <= ?";
+    $params[] = $date_end . ' 23:59:59'; // Include the full end day
+    $types .= 's';
+}
+
+// Append WHERE clauses to the main query
+if (!empty($where_clauses)) {
+    $sql .= " WHERE " . implode(' AND ', $where_clauses);
+}
+
+// Add ORDER BY
+$sql .= " ORDER BY dr.request_date DESC";
+
+
 // --- HANDLE EXCEL DOWNLOAD REQUEST ---
 if (isset($_GET['format']) && $_GET['format'] == 'excel') {
     // Set headers to force download as an Excel file
@@ -14,19 +75,15 @@ if (isset($_GET['format']) && $_GET['format'] == 'excel') {
     header("Content-Type: application/vnd.ms-excel");
     header("Content-Disposition: attachment; filename=\"$filename\"");
 
-    // Fetch all request data from the database
-    // ### NEW: Added expiry_date ###
-    $query = "
-        SELECT dr.id, dr.requester_name, dr.requester_contact, d.full_name as donor_name, 
-               dr.message, dr.status, dr.request_date, dr.expiry_date 
-        FROM donor_requests dr
-        JOIN donors d ON dr.donor_id = d.id
-        ORDER BY dr.id ASC
-    ";
-    $result = mysqli_query($conn, $query);
+    // Prepare and execute the dynamic query for Excel
+    $stmt = $conn->prepare($sql);
+    if (!empty($params)) {
+        $stmt->bind_param($types, ...$params);
+    }
+    $stmt->execute();
+    $result = $stmt->get_result();
 
     // Define the column headers for the Excel file
-    // ### NEW: Added 'Expiry Date' ###
     $column_headers = [
         "ID", "Requester", "Requester Contact", "Donor", "Message", "Status", "Request Date", "Expiry Date"
     ];
@@ -35,17 +92,15 @@ if (isset($_GET['format']) && $_GET['format'] == 'excel') {
     echo implode("\t", $column_headers) . "\n";
 
     // Loop through the results and output each row
-    if ($result && mysqli_num_rows($result) > 0) {
-        while ($row = mysqli_fetch_assoc($result)) {
-            
-            // ### NEW: Check for expiry logic ###
+    if ($result && $result->num_rows > 0) {
+        while ($row = $result->fetch_assoc()) {
+            // Check for expiry logic
             $status = $row['status'];
             $expiry_date = $row['expiry_date'];
             if ($status === 'Accepted' && $expiry_date !== NULL && (strtotime(date('Y-m-d')) > strtotime($expiry_date))) {
                 $status = 'Expired'; // Overwrite status for export
             }
             
-            // ### NEW: Added $status and $expiry_date ###
             $row_data = [
                 $row['id'], $row['requester_name'], $row['requester_contact'], $row['donor_name'],
                 $row['message'], $status, $row['request_date'], $expiry_date
@@ -60,20 +115,20 @@ if (isset($_GET['format']) && $_GET['format'] == 'excel') {
             echo implode("\t", $row_data) . "\n";
         }
     } else {
-        echo "No requests found.\n";
+        echo "No requests found matching your filters.\n";
     }
+    $stmt->close();
     exit();
 }
 
 // --- FETCH DATA FOR HTML PREVIEW ---
-// ### NEW: Added expiry_date ###
-$requests_result = $conn->query("
-    SELECT dr.id, dr.requester_name, dr.requester_contact, d.full_name as donor_name, 
-           dr.message, dr.status, dr.request_date, dr.expiry_date 
-    FROM donor_requests dr
-    JOIN donors d ON dr.donor_id = d.id
-    ORDER BY dr.request_date DESC
-");
+// Prepare and execute the same dynamic query for the HTML preview
+$stmt = $conn->prepare($sql);
+if (!empty($params)) {
+    $stmt->bind_param($types, ...$params);
+}
+$stmt->execute();
+$requests_result = $stmt->get_result();
 
 ?>
 <!DOCTYPE html>
@@ -119,15 +174,27 @@ $requests_result = $conn->query("
         .admin-profile i { margin-left: 0.5rem; }
         .content { padding: 2rem; flex-grow: 1; }
         
-        .export-controls { background-color: var(--card-bg); padding: 1.5rem; border-radius: 8px; box-shadow: var(--shadow); margin-bottom: 2rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
-        .export-controls h2 { font-size: 1.2rem; margin: 0; }
-        .export-buttons { display: flex; gap: 1rem; }
         .btn { padding: 0.7rem 1.5rem; border-radius: 5px; text-decoration: none; font-weight: 600; transition: all 0.3s ease; cursor: pointer; border: 1px solid transparent; display: inline-flex; align-items: center; justify-content: center; }
         .btn i { margin-right: 0.5rem; }
         .btn-excel { background-color: #217346; color: #fff; }
         .btn-excel:hover { background-color: #1c643d; }
         .btn-pdf { background-color: #d93025; color: #fff; }
         .btn-pdf:hover { background-color: #b9271d; }
+        .btn-primary { background: var(--primary-color); color: #fff; border-color: var(--primary-color); }
+        .btn-primary:hover { background: var(--primary-dark); }
+        .btn-secondary { background: #6c757d; color: #fff; border-color: #6c757d; }
+        .btn-secondary:hover { background: #5a6268; }
+
+        /* ### NEW: Filter Form Styles ### */
+        .filter-container { background-color: var(--card-bg); padding: 1.5rem; border-radius: 8px; box-shadow: var(--shadow); margin-bottom: 2rem; }
+        .filter-form { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap: 1rem; align-items: flex-end; }
+        .form-group label { margin-bottom: 5px; font-weight: 600; font-size: 0.9rem; display: block; }
+        .form-group input, .form-group select { width: 100%; padding: 0.7rem; border: 1px solid #ccc; border-radius: 5px; font-family: inherit; }
+        .filter-buttons { display: flex; gap: 0.5rem; }
+        
+        .export-controls { background-color: var(--card-bg); padding: 1.5rem; border-radius: 8px; box-shadow: var(--shadow); margin-bottom: 2rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
+        .export-controls h2 { font-size: 1.2rem; margin: 0; }
+        .export-buttons { display: flex; gap: 1rem; }
 
         .table-container { background-color: var(--card-bg); padding: 1.5rem; border-radius: 8px; box-shadow: var(--shadow); overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; }
@@ -139,7 +206,7 @@ $requests_result = $conn->query("
         .status-Pending { background-color: #f1c40f; }
         .status-Accepted { background-color: #2ecc71; }
         .status-Denied { background-color: #e74c3c; }
-        .status-Expired { background-color: #6c757d; } /* ### NEW: Expired status style ### */
+        .status-Expired { background-color: #6c757d; }
         
         @media (max-width: 992px) {
             .sidebar { transform: translateX(-260px); }
@@ -148,6 +215,9 @@ $requests_result = $conn->query("
             body.sidebar-active .sidebar { transform: translateX(0); }
             .overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.4); z-index: 998; }
             body.sidebar-active .overlay { display: block; }
+        }
+        @media (max-width: 768px) {
+            .filter-form { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -177,16 +247,55 @@ $requests_result = $conn->query("
         </header>
 
         <main class="content">
+            
+            <!-- ### NEW: Filter Form ### -->
+            <div class="filter-container">
+                <form action="export_requests.php" method="get" class="filter-form">
+                    <div class="form-group">
+                        <label for="search">Search</label>
+                        <input type="text" name="search" id="search" placeholder="Requester or Donor..." value="<?php echo htmlspecialchars($search); ?>">
+                    </div>
+                    <div class="form-group">
+                        <label for="status">Status</label>
+                        <select name="status" id="status">
+                            <option value="">All</option>
+                            <option value="Pending" <?php echo ($status_filter == 'Pending') ? 'selected' : ''; ?>>Pending</option>
+                            <option value="Accepted" <?php echo ($status_filter == 'Accepted') ? 'selected' : ''; ?>>Accepted</option>
+                            <option value="Denied" <?php echo ($status_filter == 'Denied') ? 'selected' : ''; ?>>Denied</option>
+                            <option value="Expired" <?php echo ($status_filter == 'Expired') ? 'selected' : ''; ?>>Expired</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="date_start">From</label>
+                        <input type="date" name="date_start" id="date_start" value="<?php echo htmlspecialchars($date_start); ?>">
+                    </div>
+                    <div class="form-group">
+                        <label for="date_end">To</label>
+                        <input type="date" name="date_end" id="date_end" value="<?php echo htmlspecialchars($date_end); ?>">
+                    </div>
+                    <div class="filter-buttons">
+                        <button type="submit" class="btn btn-primary">Filter</button>
+                        <a href="export_requests.php" class="btn btn-secondary">Reset</a>
+                    </div>
+                </form>
+            </div>
+
             <div class="export-controls">
                 <h2>Export Options</h2>
                 <div class="export-buttons">
-                    <a href="export_requests.php?format=excel" class="btn btn-excel"><i class="fas fa-file-excel"></i> Download as Excel</a>
+                    <?php
+                        // Build the query string for export links, preserving filters
+                        $excel_params = $_GET;
+                        $excel_params['format'] = 'excel';
+                        $excel_query_string = http_build_query($excel_params);
+                    ?>
+                    <a href="export_requests.php?<?php echo $excel_query_string; ?>" class="btn btn-excel"><i class="fas fa-file-excel"></i> Download as Excel</a>
                     <button id="download-pdf" class="btn btn-pdf"><i class="fas fa-file-pdf"></i> Download as PDF</button>
                 </div>
             </div>
 
             <div class="table-container">
-                <h2>Data Preview</h2>
+                <h2>Data Preview (Filtered)</h2>
                 <table id="requests-table">
                     <thead>
                         <tr>
@@ -197,14 +306,14 @@ $requests_result = $conn->query("
                             <th>Message</th>
                             <th>Status</th>
                             <th>Date</th>
-                            <th>Expiry Date</th> <!-- ### NEW: Column ### -->
+                            <th>Expiry Date</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if ($requests_result && $requests_result->num_rows > 0): ?>
                             <?php while($request = $requests_result->fetch_assoc()): ?>
                                 <?php
-                                    // ### NEW: Check for expiry ###
+                                    // Check for expiry logic
                                     $status = $request['status'];
                                     $expiry_date = $request['expiry_date'];
                                     if ($status === 'Accepted' && $expiry_date !== NULL && (strtotime(date('Y-m-d')) > strtotime($expiry_date))) {
@@ -218,18 +327,16 @@ $requests_result = $conn->query("
                                     <td><?php echo htmlspecialchars($request['donor_name']); ?></td>
                                     <td class="message-col"><?php echo htmlspecialchars($request['message']); ?></td>
                                     <td>
-                                        <!-- ### NEW: Use $status variable for class ### -->
                                         <span class="status-badge status-<?php echo htmlspecialchars($status); ?>">
                                             <?php echo htmlspecialchars($status); ?>
                                         </span>
                                     </td>
                                     <td><?php echo date("d M, Y H:i", strtotime($request['request_date'])); ?></td>
-                                    <!-- ### NEW: Display expiry date ### -->
                                     <td><?php echo ($expiry_date) ? date("d M, Y", strtotime($expiry_date)) : 'N/A'; ?></td>
                                 </tr>
                             <?php endwhile; ?>
                         <?php else: ?>
-                            <tr><td colspan="8" style="text-align:center;">No requests found.</td></tr> <!-- ### NEW: Colspan is 8 ### -->
+                            <tr><td colspan="8" style="text-align:center;">No requests found matching your filters.</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
@@ -254,6 +361,7 @@ $requests_result = $conn->query("
             }
 
             // --- PDF Download Logic ---
+            // This will automatically export the filtered table shown in the preview
             const pdfButton = document.getElementById('download-pdf');
             if (pdfButton) {
                 pdfButton.addEventListener('click', () => {
@@ -265,14 +373,14 @@ $requests_result = $conn->query("
                     doc.text("Generated on: <?php echo date('Y-m-d H:i:s'); ?>", 14, 22);
 
                     doc.autoTable({
-                        html: '#requests-table',
+                        html: '#requests-table', // This ID points to the filtered preview table
                         startY: 28,
                         theme: 'grid',
                         headStyles: { fillColor: [217, 42, 42] },
                         styles: { fontSize: 8, cellPadding: 2 }
                     });
 
-                    doc.save('requests_list_<?php echo date("Y-m-d"); ?>.pdf');
+                    doc.save('requests_list_filtered_<?php echo date("Y-m-d"); ?>.pdf');
                 });
             }
         });
